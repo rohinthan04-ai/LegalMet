@@ -6,7 +6,8 @@ from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timezone
 from database import SessionLocal,get_db
 from models import Inspector,Inspection,Image
-from schemas import InspectorCreate, InspectorResponse,InspectorLogin, TokenResponse,InspectionCreate, InspectionResponse,ImageResponse
+from schemas import InspectorCreate, InspectorResponse,InspectorLogin, TokenResponse,InspectionCreate, InspectionResponse,ImageResponse,ProductExtraction, GeminiAnalysisResponse
+from services.gemini_service import extract_product_details
 from core.security import hash_password, verify_password
 from auth.jwt_handler import create_access_token
 from auth.dependencies import get_current_inspector
@@ -232,3 +233,51 @@ def get_image(
     content=image_record.image,
     media_type=image_record.content_type
 )
+
+@app.post(
+    "/images/{img_id}/analyze",
+    response_model=GeminiAnalysisResponse
+)
+def analyze_image(
+    img_id: int,
+    db: Session = Depends(get_db),
+    current_inspector: Inspector = Depends(get_current_inspector)
+):
+
+    # Find image belonging to the logged-in inspector
+    image_record = db.query(Image).join(Inspection).filter(
+        Image.img_id == img_id,
+        Inspection.id == current_inspector.id
+    ).first()
+
+    if image_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found"
+        )
+
+    if not image_record.content_type:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Image content type is missing"
+        )
+
+    # Send stored image to Gemini
+    try:
+        extracted_data = extract_product_details(
+            image_bytes=image_record.image,
+            content_type=image_record.content_type
+        )
+
+    except Exception as exc:
+        print("GEMINI ERROR:", repr(exc))
+        raise HTTPException(
+            status_code=502,
+            detail="Gemini image analysis failed"
+        ) from exc
+
+    # Return extracted JSON
+    return GeminiAnalysisResponse(
+        img_id=img_id,
+        extracted_data=extracted_data
+    )
