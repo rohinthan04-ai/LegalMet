@@ -5,8 +5,9 @@ from sqlalchemy.exc import IntegrityError
 
 from database import SessionLocal
 from models import Inspector
-from schemas import InspectorCreate, InspectorResponse
-from core.security import hash_password
+from schemas import InspectorCreate, InspectorResponse,InspectorLogin, TokenResponse
+from core.security import hash_password, verify_password
+from auth.jwt_handler import create_access_token
 
 
 app = FastAPI(
@@ -78,3 +79,49 @@ def register_inspector(
         )
 
     return new_inspector
+
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login_inspector(
+    inspector: InspectorLogin,
+    db: Session = Depends(get_db)
+):
+
+    # Find inspector by email
+    existing_inspector = db.query(Inspector).filter(
+        Inspector.email == inspector.email
+    ).first()
+
+    if not existing_inspector:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
+        )
+
+    # Verify password
+    if not verify_password(
+        inspector.password,
+        existing_inspector.password
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
+        )
+
+    # Check whether inspector is active
+    if not existing_inspector.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Inspector account is inactive"
+        )
+
+    # Generate JWT token
+    access_token = create_access_token(
+        data={"sub": str(existing_inspector.id)}
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
