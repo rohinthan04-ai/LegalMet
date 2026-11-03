@@ -36,3 +36,22 @@ def create_access_token(data: dict) -> str:
     )
 
     return token
+
+
+def verify_access_token(token: str):
+    try:
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM]
+        )
+
+        inspector_id = payload.get("sub")
+
+        if inspector_id is None:
+            return None
+
+        return inspector_id
+
+    except jwt.InvalidTokenError:
+        return None

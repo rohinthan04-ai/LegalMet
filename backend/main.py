@@ -3,12 +3,12 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
-from database import SessionLocal
+from database import SessionLocal,get_db
 from models import Inspector
 from schemas import InspectorCreate, InspectorResponse,InspectorLogin, TokenResponse
 from core.security import hash_password, verify_password
 from auth.jwt_handler import create_access_token
-
+from auth.dependencies import get_current_inspector
 
 app = FastAPI(
     title="LegalMet-AI",
@@ -125,3 +125,11 @@ def login_inspector(
         "access_token": access_token,
         "token_type": "bearer"
     }
+
+
+
+@app.get("/auth/me", response_model=InspectorResponse)
+def get_inspector_profile(
+    current_inspector: Inspector = Depends(get_current_inspector)
+):
+    return current_inspector
