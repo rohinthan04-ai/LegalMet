@@ -1,7 +1,7 @@
 
 from pydantic import BaseModel, EmailStr, ConfigDict, Field
 from datetime import datetime
-
+from typing import Literal
 
 class InspectorCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100)
@@ -99,3 +99,22 @@ class CategoryResponse(BaseModel):
     category_name: str
 
     model_config = ConfigDict(from_attributes=True)
+
+class RuleResponse(BaseModel):
+    r_id: int
+    rule: str
+    is_mandatory: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+
+class RuleEvaluation(BaseModel):
+    r_id: int
+    status: Literal["PASS", "FAIL", "UNABLE_TO_VERIFY"]
+    reason: str
+    evidence: str | None = None
+
+
+class RuleEvaluationResponse(BaseModel):
+    inspection_evaluation: list[RuleEvaluation]

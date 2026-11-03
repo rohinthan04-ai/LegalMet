@@ -11,7 +11,7 @@ from services.gemini_service import extract_product_details
 from core.security import hash_password, verify_password
 from auth.jwt_handler import create_access_token
 from auth.dependencies import get_current_inspector
-
+from rules.routes import router as rules_router
 app = FastAPI(
     title="LegalMet-AI",
     description="Packaged Commodity Inspection Assistant",
@@ -293,3 +293,6 @@ def get_categories(
     ).all()
 
     return categories
+
+
+app.include_router(rules_router)
