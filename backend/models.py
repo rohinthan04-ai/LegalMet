@@ -53,8 +53,8 @@ class Image(Base):
 
     img_id = Column(Integer, primary_key=True, index=True)
     ins_id = Column(Integer, ForeignKey("inspections.ins_id"))
-    image = Column(LargeBinary)
-
+    image = Column(LargeBinary, nullable=False)
+    content_type = Column(String(100), nullable=False)
     inspection = relationship("Inspection", back_populates="images")
 
 

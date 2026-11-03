@@ -1,11 +1,12 @@
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-
+from datetime import datetime, timezone
 from database import SessionLocal,get_db
-from models import Inspector
-from schemas import InspectorCreate, InspectorResponse,InspectorLogin, TokenResponse
+from models import Inspector,Inspection,Image
+from schemas import InspectorCreate, InspectorResponse,InspectorLogin, TokenResponse,InspectionCreate, InspectionResponse,ImageResponse
 from core.security import hash_password, verify_password
 from auth.jwt_handler import create_access_token
 from auth.dependencies import get_current_inspector
@@ -133,3 +134,101 @@ def get_inspector_profile(
     current_inspector: Inspector = Depends(get_current_inspector)
 ):
     return current_inspector
+
+
+@app.post(
+    "/inspections",
+    response_model=InspectionResponse,
+    status_code=status.HTTP_201_CREATED
+)
+def create_inspection(
+    inspection_data: InspectionCreate,
+    db: Session = Depends(get_db),
+    current_inspector: Inspector = Depends(get_current_inspector)
+):
+    new_inspection = Inspection(
+        id=current_inspector.id,
+        date=datetime.now(timezone.utc),
+        status="pending",
+        category=inspection_data.category
+    )
+
+    db.add(new_inspection)
+    db.commit()
+    db.refresh(new_inspection)
+
+    return new_inspection
+
+@app.post(
+    "/inspections/{ins_id}/images",
+    response_model=ImageResponse,
+    status_code=status.HTTP_201_CREATED
+)
+def upload_image(
+    ins_id: int,
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_inspector: Inspector = Depends(get_current_inspector)
+):
+    # Check whether inspection exists and belongs to this inspector
+    inspection = db.query(Inspection).filter(
+        Inspection.ins_id == ins_id,
+        Inspection.id == current_inspector.id
+    ).first()
+
+    if inspection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Inspection not found"
+        )
+
+    # Validate image type
+    if not image.content_type or not image.content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only image files are allowed"
+        )
+
+    # Read image as binary data
+    image_data = image.file.read()
+
+    if not image_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded image is empty"
+        )
+
+    # Store image in database
+    new_image = Image(
+    ins_id=ins_id,
+    image=image_data,
+    content_type=image.content_type
+)
+
+    db.add(new_image)
+    db.commit()
+    db.refresh(new_image)
+
+    return new_image
+
+@app.get("/images/{img_id}")
+def get_image(
+    img_id: int,
+    db: Session = Depends(get_db),
+    current_inspector: Inspector = Depends(get_current_inspector)
+):
+    image_record = db.query(Image).join(Inspection).filter(
+        Image.img_id == img_id,
+        Inspection.id == current_inspector.id
+    ).first()
+
+    if image_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found"
+        )
+
+    return Response(
+    content=image_record.image,
+    media_type=image_record.content_type
+)

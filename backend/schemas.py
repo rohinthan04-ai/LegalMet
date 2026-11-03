@@ -1,5 +1,6 @@
 
 from pydantic import BaseModel, EmailStr, ConfigDict, Field
+from datetime import datetime
 
 
 class InspectorCreate(BaseModel):
@@ -25,3 +26,21 @@ class InspectorLogin(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str
+
+class InspectionCreate(BaseModel):
+    category: str = Field(min_length=2, max_length=100)
+
+
+class InspectionResponse(BaseModel):
+    ins_id: int
+    date: datetime
+    status: str
+    category: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+class ImageResponse(BaseModel):
+    img_id: int
+    ins_id: int
+
+    model_config = ConfigDict(from_attributes=True)
