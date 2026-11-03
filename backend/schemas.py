@@ -92,3 +92,10 @@ class ProductExtraction(BaseModel):
 class GeminiAnalysisResponse(BaseModel):
     img_id: int
     extracted_data: ProductExtraction
+
+
+class CategoryResponse(BaseModel):
+    c_id: int
+    category_name: str
+
+    model_config = ConfigDict(from_attributes=True)

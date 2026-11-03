@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timezone
 from database import SessionLocal,get_db
-from models import Inspector,Inspection,Image
-from schemas import InspectorCreate, InspectorResponse,InspectorLogin, TokenResponse,InspectionCreate, InspectionResponse,ImageResponse,ProductExtraction, GeminiAnalysisResponse
+from models import Inspector,Inspection,Image,Category
+from schemas import InspectorCreate, InspectorResponse,InspectorLogin, TokenResponse,InspectionCreate, InspectionResponse,ImageResponse,ProductExtraction, GeminiAnalysisResponse, CategoryResponse
 from services.gemini_service import extract_product_details
 from core.security import hash_password, verify_password
 from auth.jwt_handler import create_access_token
@@ -281,3 +281,15 @@ def analyze_image(
         img_id=img_id,
         extracted_data=extracted_data
     )
+
+
+@app.get("/categories", response_model=list[CategoryResponse])
+def get_categories(
+    db: Session = Depends(get_db),
+    current_inspector: Inspector = Depends(get_current_inspector)
+):
+    categories = db.query(Category).order_by(
+        Category.category_name.asc()
+    ).all()
+
+    return categories
