@@ -10,6 +10,7 @@ from sqlalchemy import (
     CheckConstraint,
     LargeBinary
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 from sqlalchemy.orm import relationship
 from database import Base
@@ -55,6 +56,8 @@ class Image(Base):
     ins_id = Column(Integer, ForeignKey("inspections.ins_id"))
     image = Column(LargeBinary, nullable=False)
     content_type = Column(String(100), nullable=False)
+    details = Column(JSONB, nullable=True)
+
     inspection = relationship("Inspection", back_populates="images")
 
 

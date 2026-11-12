@@ -5,8 +5,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timezone
 from database import SessionLocal,get_db
-from models import Inspector,Inspection,Image,Category
-from schemas import InspectorCreate, InspectorResponse,InspectorLogin, TokenResponse,InspectionCreate, InspectionResponse,ImageResponse,ProductExtraction, GeminiAnalysisResponse, CategoryResponse
+from models import Inspector,Inspection,Image,Category, CategoryRule, Rule
+from schemas import InspectorCreate, InspectorResponse, InspectorLogin, TokenResponse, InspectionCreate, InspectionResponse, ImageResponse, ProductExtraction, GeminiAnalysisResponse, CategoryResponse, RuleEvaluationResponse
+from services.gemini_evaluation import evaluate_product_rules
 from services.gemini_service import extract_product_details
 from core.security import hash_password, verify_password
 from auth.jwt_handler import create_access_token
@@ -276,13 +277,26 @@ def analyze_image(
             detail="Gemini image analysis failed"
         ) from exc
 
+    # Store extracted details in the database
+    try:
+        image_record.details = extracted_data.model_dump(mode="json")
+
+        db.commit()
+        db.refresh(image_record)
+
+    except Exception as exc:
+        db.rollback()
+        print("DATABASE ERROR:", repr(exc))
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save extracted details"
+        ) from exc
+
     # Return extracted JSON
     return GeminiAnalysisResponse(
         img_id=img_id,
         extracted_data=extracted_data
     )
-
-
 @app.get("/categories", response_model=list[CategoryResponse])
 def get_categories(
     db: Session = Depends(get_db),
@@ -296,3 +310,76 @@ def get_categories(
 
 
 app.include_router(rules_router)
+
+
+
+
+@app.post(
+    "/categories/{c_id}/evaluate",
+    response_model=RuleEvaluationResponse
+)
+def evaluate_category_rules(
+    c_id: int,
+    extracted_data: ProductExtraction,
+    db: Session = Depends(get_db),
+    current_inspector: Inspector = Depends(get_current_inspector)
+):
+
+    # Check whether category exists
+    category = db.query(Category).filter(
+        Category.c_id == c_id
+    ).first()
+
+    if category is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Category not found"
+        )
+
+    # Retrieve rules belonging to the selected category
+    rules = (
+        db.query(
+            Rule.r_id,
+            Rule.rule,
+            CategoryRule.is_mandatory
+        )
+        .join(
+            CategoryRule,
+            Rule.r_id == CategoryRule.r_id
+        )
+        .filter(CategoryRule.c_id == c_id)
+        .all()
+    )
+
+    if not rules:
+        raise HTTPException(
+            status_code=404,
+            detail="No rules found for this category"
+        )
+
+    # Convert SQLAlchemy rows into dictionaries
+    retrieved_rules = [
+        {
+            "r_id": row.r_id,
+            "rule": row.rule,
+            "is_mandatory": row.is_mandatory
+        }
+        for row in rules
+    ]
+
+    # Send product data and retrieved rules to Gemini
+    try:
+        evaluation = evaluate_product_rules(
+            extracted_data=extracted_data,
+            retrieved_rules=retrieved_rules
+        )
+
+    except Exception as exc:
+        print("GEMINI EVALUATION ERROR:", repr(exc))
+
+        raise HTTPException(
+            status_code=502,
+            detail="Gemini rule evaluation failed"
+        ) from exc
+
+    return evaluation
