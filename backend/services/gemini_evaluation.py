@@ -25,7 +25,7 @@ def evaluate_product_rules(
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY not found in .env")
 
-    model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+    model = os.getenv("GEMINI_MODEL", "gemini-3.5 Flash-Lite")
 
     client = genai.Client(api_key=api_key)
 

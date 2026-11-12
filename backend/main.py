@@ -438,21 +438,24 @@ def evaluate_image(
                 date=datetime.now(timezone.utc),
                 gemini_report=evaluation.model_dump(mode="json")
             )
-
             db.add(report_record)
 
         else:
             report_record.date = datetime.now(timezone.utc)
-            report_record.gemini_report = evaluation.model_dump(
-                mode="json"
-            )
+            report_record.gemini_report = evaluation.model_dump(mode="json")
+
+        # Update inspection status
+        inspection_record = db.query(Inspection).filter(
+            Inspection.ins_id == inspection_id
+        ).first()
+
+        inspection_record.status = "completed"
 
         db.commit()
 
     except Exception as exc:
         db.rollback()
         print("REPORT DATABASE ERROR:", repr(exc))
-
         raise HTTPException(
             status_code=500,
             detail="Failed to save Gemini evaluation report"
