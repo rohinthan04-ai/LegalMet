@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timezone
 from database import SessionLocal,get_db
-from models import Inspector,Inspection,Image,Category, CategoryRule, Rule
+from models import Inspector,Inspection,Image,Category, CategoryRule, Rule, Report
 from schemas import InspectorCreate, InspectorResponse, InspectorLogin, TokenResponse, InspectionCreate, InspectionResponse, ImageResponse, ProductExtraction, GeminiAnalysisResponse, CategoryResponse, RuleEvaluationResponse
 from services.gemini_evaluation import evaluate_product_rules
 from services.gemini_service import extract_product_details
@@ -297,6 +297,7 @@ def analyze_image(
         img_id=img_id,
         extracted_data=extracted_data
     )
+
 @app.get("/categories", response_model=list[CategoryResponse])
 def get_categories(
     db: Session = Depends(get_db),
@@ -314,18 +315,43 @@ app.include_router(rules_router)
 
 
 
+
+
 @app.post(
-    "/categories/{c_id}/evaluate",
+    "/categories/{c_id}/images/{img_id}/evaluate",
     response_model=RuleEvaluationResponse
 )
-def evaluate_category_rules(
+def evaluate_image(
     c_id: int,
-    extracted_data: ProductExtraction,
+    img_id: int,
     db: Session = Depends(get_db),
     current_inspector: Inspector = Depends(get_current_inspector)
 ):
 
-    # Check whether category exists
+    # 1. Retrieve image belonging to the logged-in inspector
+    image_record = db.query(Image).join(Inspection).filter(
+        Image.img_id == img_id,
+        Inspection.id == current_inspector.id
+    ).first()
+
+    if image_record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Image not found"
+        )
+
+    # 2. Check whether OCR details exist
+    if image_record.details is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Image has not been analysed yet"
+        )
+
+    extracted_data = ProductExtraction.model_validate(
+        image_record.details
+    )
+
+    # 3. Check category
     category = db.query(Category).filter(
         Category.c_id == c_id
     ).first()
@@ -336,7 +362,7 @@ def evaluate_category_rules(
             detail="Category not found"
         )
 
-    # Retrieve rules belonging to the selected category
+    # 4. Retrieve category rules
     rules = (
         db.query(
             Rule.r_id,
@@ -357,7 +383,6 @@ def evaluate_category_rules(
             detail="No rules found for this category"
         )
 
-    # Convert SQLAlchemy rows into dictionaries
     retrieved_rules = [
         {
             "r_id": row.r_id,
@@ -367,7 +392,7 @@ def evaluate_category_rules(
         for row in rules
     ]
 
-    # Send product data and retrieved rules to Gemini
+    # 5. Evaluate using Gemini
     try:
         evaluation = evaluate_product_rules(
             extracted_data=extracted_data,
@@ -382,4 +407,39 @@ def evaluate_category_rules(
             detail="Gemini rule evaluation failed"
         ) from exc
 
+    # 6. Store Gemini evaluation in reports table
+    try:
+        inspection_id = image_record.ins_id
+
+        report_record = db.query(Report).filter(
+            Report.inspection_id == inspection_id
+        ).first()
+
+        if report_record is None:
+            report_record = Report(
+                inspection_id=inspection_id,
+                date=datetime.now(timezone.utc),
+                gemini_report=evaluation.model_dump(mode="json")
+            )
+
+            db.add(report_record)
+
+        else:
+            report_record.date = datetime.now(timezone.utc)
+            report_record.gemini_report = evaluation.model_dump(
+                mode="json"
+            )
+
+        db.commit()
+
+    except Exception as exc:
+        db.rollback()
+        print("REPORT DATABASE ERROR:", repr(exc))
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save Gemini evaluation report"
+        ) from exc
+
+    # 7. Return evaluation
     return evaluation

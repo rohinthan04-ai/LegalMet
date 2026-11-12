@@ -94,5 +94,5 @@ class Report(Base):
 
     date = Column(DateTime)
     report = Column(LargeBinary)
-
+    gemini_report = Column(JSONB, nullable=True)
     inspection = relationship("Inspection", back_populates="report")
