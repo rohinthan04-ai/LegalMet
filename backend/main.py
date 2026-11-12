@@ -1,6 +1,23 @@
-
+import re
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.responses import Response
+from xml.sax.saxutils import escape
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    PageBreak,
+    KeepTogether
+)
+from io import BytesIO
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timezone
@@ -443,3 +460,356 @@ def evaluate_image(
 
     # 7. Return evaluation
     return evaluation
+
+
+
+# ---------------------------------------------------------------- palette
+NAVY = colors.HexColor("#1F3A5F")
+SLATE = colors.HexColor("#5B6B7F")
+LIGHT_BG = colors.HexColor("#F4F6F9")
+BORDER = colors.HexColor("#D9DEE5")
+
+STATUS_STYLE = {
+    "PASS": (colors.HexColor("#1E8E4E"), colors.HexColor("#E6F4EC"), "PASS"),
+    "FAIL": (colors.HexColor("#C0392B"), colors.HexColor("#FBEAE8"), "FAIL"),
+    "UNABLE_TO_VERIFY": (colors.HexColor("#B7791F"), colors.HexColor("#FDF3DC"), "UNABLE TO VERIFY"),
+}
+STATUS_ORDER = {"FAIL": 0, "UNABLE_TO_VERIFY": 1, "PASS": 2}
+
+PAGE_W, _ = A4
+CONTENT_W = PAGE_W - 36 * mm  # 18mm margins
+
+
+# ---------------------------------------------------------------- helpers
+SECTION_RE = re.compile(r"^([A-Z][A-Z &/\-]{2,}):\s*(.*)$")
+
+
+def parse_rule(raw):
+    """Split the long 'RULE TITLE: ... LEGAL REQUIREMENT: ...' text into sections."""
+    sections, current = {}, None
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = SECTION_RE.match(line)
+        if m:
+            current = m.group(1)
+            sections[current] = m.group(2).strip()
+        elif current:
+            sections[current] = (sections[current] + " " + line).strip()
+        else:
+            sections.setdefault("RULE TITLE", line)
+    return sections
+
+
+def fmt_value(value):
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value)
+    return str(value)
+
+
+def fmt_date(value):
+    if isinstance(value, datetime):
+        return value.strftime("%d %b %Y, %I:%M %p")
+    return str(value)
+
+
+def p(text, style):
+    return Paragraph(escape(str(text)), style)
+
+
+class NumberedCanvas(canvas.Canvas):
+    """Canvas that draws header band + 'Page x of y' footer on every page."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._saved_pages = []
+
+    def showPage(self):
+        self._saved_pages.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        total = len(self._saved_pages)
+        for state in self._saved_pages:
+            self.__dict__.update(state)
+            self._decorate(total)
+            super().showPage()
+        super().save()
+
+    def _decorate(self, total):
+        # top accent band
+        self.setFillColor(NAVY)
+        self.rect(0, A4[1] - 6 * mm, A4[0], 6 * mm, stroke=0, fill=1)
+        # footer
+        self.setStrokeColor(BORDER)
+        self.setLineWidth(0.6)
+        self.line(18 * mm, 14 * mm, A4[0] - 18 * mm, 14 * mm)
+        self.setFont("Helvetica", 8)
+        self.setFillColor(SLATE)
+        self.drawString(18 * mm, 9.5 * mm, "LegalMet-AI  |  AI-assisted inspection report (preliminary)")
+        self.drawRightString(A4[0] - 18 * mm, 9.5 * mm, f"Page {self._pageNumber} of {total}")
+
+
+# ---------------------------------------------------------------- endpoint
+@app.get("/inspections/{ins_id}/report")
+def generate_inspection_report(
+    ins_id: int,
+    db: Session = Depends(get_db),
+    current_inspector: Inspector = Depends(get_current_inspector),
+):
+    # 1. Inspection (check this filter: see note in reply)
+    inspection = db.query(Inspection).filter(
+        Inspection.ins_id == ins_id,
+        Inspection.id == current_inspector.id,
+    ).first()
+    if inspection is None:
+        raise HTTPException(status_code=404, detail="Inspection not found")
+
+    # 2. Gemini report
+    report_record = db.query(Report).filter(Report.inspection_id == ins_id).first()
+    if report_record is None or report_record.gemini_report is None:
+        raise HTTPException(status_code=404, detail="Gemini evaluation report not found")
+    gemini_data = report_record.gemini_report
+
+    # 3. Product details
+    image_record = db.query(Image).filter(Image.ins_id == ins_id).first()
+    product_details = image_record.details if image_record else None
+
+    # 4. Rules
+    evaluations = gemini_data.get("inspection_evaluation", [])
+    rule_ids = [item["r_id"] for item in evaluations]
+    rule_records = db.query(Rule).filter(Rule.r_id.in_(rule_ids)).all()
+    rule_lookup = {rule.r_id: rule.rule for rule in rule_records}
+
+    # 5. Styles
+    base = getSampleStyleSheet()["BodyText"]
+    s_title = ParagraphStyle("t", parent=base, fontName="Helvetica-Bold", fontSize=22,
+                             textColor=colors.white, alignment=TA_LEFT, leading=26)
+    s_sub = ParagraphStyle("st", parent=base, fontSize=10.5, textColor=colors.HexColor("#CBD6E6"),
+                           leading=14)
+    s_h = ParagraphStyle("h", parent=base, fontName="Helvetica-Bold", fontSize=13,
+                         textColor=NAVY, spaceBefore=14, spaceAfter=6, leading=16)
+    s_label = ParagraphStyle("l", parent=base, fontName="Helvetica-Bold", fontSize=8.5,
+                             textColor=SLATE, leading=11)
+    s_val = ParagraphStyle("v", parent=base, fontSize=9.5, textColor=colors.HexColor("#1B2430"),
+                           leading=13)
+    s_small = ParagraphStyle("sm", parent=base, fontSize=8, textColor=SLATE, leading=10.5)
+    s_body = ParagraphStyle("b", parent=base, fontSize=9, leading=12.5,
+                            textColor=colors.HexColor("#1B2430"))
+    s_rule_title = ParagraphStyle("rt", parent=base, fontName="Helvetica-Bold", fontSize=10,
+                                  textColor=colors.HexColor("#1B2430"), leading=13)
+    s_badge = ParagraphStyle("bd", parent=base, fontName="Helvetica-Bold", fontSize=7.5,
+                             alignment=TA_CENTER, leading=10)
+    s_stat_num = ParagraphStyle("sn", parent=base, fontName="Helvetica-Bold", fontSize=22,
+                                alignment=TA_CENTER, leading=26)
+    s_stat_lbl = ParagraphStyle("sl", parent=base, fontName="Helvetica-Bold", fontSize=7.5,
+                                alignment=TA_CENTER, textColor=SLATE, leading=10)
+    s_note = ParagraphStyle("n", parent=base, fontSize=9, leading=13, textColor=colors.HexColor("#7A4B00"))
+
+    story = []
+
+    # 6. Title banner
+    banner = Table(
+        [[Paragraph("LegalMet-AI", s_title)],
+         [Paragraph("Packaged Commodity Inspection Report", s_sub)]],
+        colWidths=[CONTENT_W],
+    )
+    banner.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), NAVY),
+        ("LEFTPADDING", (0, 0), (-1, -1), 14),
+        ("TOPPADDING", (0, 0), (0, 0), 14),
+        ("BOTTOMPADDING", (0, 1), (0, 1), 14),
+        ("TOPPADDING", (0, 1), (0, 1), 0),
+        ("BOTTOMPADDING", (0, 0), (0, 0), 2),
+    ]))
+    story += [banner, Spacer(1, 10)]
+
+    # 7. Inspection information (2 x 2 grid of label/value pairs)
+    def kv(label, value):
+        return [Paragraph(label.upper(), s_label), Paragraph(escape(str(value)), s_val)]
+
+    info_items = [
+        ("Inspection ID", inspection.ins_id),
+        ("Inspection Date", fmt_date(inspection.date)),
+        ("Inspector", current_inspector.name),
+        ("Email", current_inspector.email),
+        ("Category", (inspection.category or "Not specified").title()),
+        ("Status", (inspection.status or "").title()),
+    ]
+    cells = []
+    for label, value in info_items:
+        cells.append([Paragraph(label.upper(), s_label), Paragraph(escape(str(value)), s_val)])
+    grid = []
+    for i in range(0, len(cells), 2):
+        grid.append([cells[i], cells[i + 1]])
+    info_table = Table(grid, colWidths=[CONTENT_W / 2] * 2)
+    info_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), LIGHT_BG),
+        ("BOX", (0, 0), (-1, -1), 0.6, BORDER),
+        ("LINEBELOW", (0, 0), (-1, -2), 0.4, BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -1), 12),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    story += [info_table]
+
+    # 8. Product details
+    story.append(Paragraph("Extracted Product Details", s_h))
+    rows = []
+    if product_details:
+        for key, value in product_details.items():
+            if value is not None:
+                rows.append([
+                    Paragraph(escape(key.replace("_", " ").title()), s_label),
+                    Paragraph(escape(fmt_value(value)), s_val),
+                ])
+    if rows:
+        pt = Table(rows, colWidths=[48 * mm, CONTENT_W - 48 * mm])
+        pt.setStyle(TableStyle([
+            ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, LIGHT_BG]),
+            ("BOX", (0, 0), (-1, -1), 0.6, BORDER),
+            ("LINEBELOW", (0, 0), (-1, -2), 0.3, BORDER),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(pt)
+    else:
+        story.append(Paragraph("No extracted product details available.", s_body))
+
+    # 9. Summary cards
+    counts = {k: sum(1 for i in evaluations if i["status"] == k) for k in STATUS_STYLE}
+    total = len(evaluations)
+
+    story.append(Paragraph("Evaluation Summary", s_h))
+    stat_cells, stat_styles = [], []
+    for idx, key in enumerate(["PASS", "FAIL", "UNABLE_TO_VERIFY"]):
+        fg, bg, label = STATUS_STYLE[key]
+        num = ParagraphStyle(f"n{idx}", parent=s_stat_num, textColor=fg)
+        stat_cells.append([Paragraph(str(counts[key]), num), Paragraph(label, s_stat_lbl)])
+        stat_styles.append(("BACKGROUND", (idx, 0), (idx, 0), bg))
+    stat_cells.append([Paragraph(str(total), ParagraphStyle("nt", parent=s_stat_num, textColor=NAVY)),
+                       Paragraph("TOTAL RULES", s_stat_lbl)])
+    stat_styles.append(("BACKGROUND", (3, 0), (3, 0), LIGHT_BG))
+
+    stats = Table([stat_cells], colWidths=[CONTENT_W / 4] * 4)
+    stats.setStyle(TableStyle(stat_styles + [
+        ("BOX", (0, 0), (-1, -1), 0.6, BORDER),
+        ("INNERGRID", (0, 0), (-1, -1), 2, colors.white),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.append(stats)
+
+    # progress bar (pass / fail / unable proportions)
+    if total:
+        bar_w = [CONTENT_W * counts[k] / total for k in ("PASS", "FAIL", "UNABLE_TO_VERIFY")]
+        bar_cols = [w for w in bar_w if w > 0]
+        bar_keys = [k for k, w in zip(("PASS", "FAIL", "UNABLE_TO_VERIFY"), bar_w) if w > 0]
+        bar = Table([[""] * len(bar_cols)], colWidths=bar_cols, rowHeights=[5])
+        bar.setStyle(TableStyle(
+            [("BACKGROUND", (i, 0), (i, 0), STATUS_STYLE[k][0]) for i, k in enumerate(bar_keys)]
+        ))
+        story += [Spacer(1, 6), bar]
+
+    # 10. Rule cards (FAIL first, then UNABLE_TO_VERIFY, then PASS)
+    story.append(Paragraph("Rule Evaluation Results", s_h))
+    ordered = sorted(evaluations, key=lambda i: (STATUS_ORDER.get(i["status"], 3), i["r_id"]))
+
+    for item in ordered:
+        fg, bg, label = STATUS_STYLE.get(item["status"], (SLATE, LIGHT_BG, item["status"]))
+        sections = parse_rule(rule_lookup.get(item["r_id"], ""))
+        title = sections.get("RULE TITLE") or "Rule not found"
+        legal_ref = sections.get("LEGAL REFERENCE")
+        evidence = item.get("evidence")
+
+        badge_style = ParagraphStyle("bs", parent=s_badge, textColor=fg)
+        rows = [[
+            Paragraph(f"#{item['r_id']}", s_small),
+            Paragraph(escape(title), s_rule_title),
+            Paragraph(label, badge_style),
+        ]]
+        rows.append(["", [Paragraph("<b>Assessment:</b> " + escape(item["reason"]), s_body)], ""])
+        if evidence and evidence != "Not available":
+            rows.append(["", [Paragraph("<b>Evidence:</b> " + escape(str(evidence)), s_body)], ""])
+        if legal_ref:
+            rows.append(["", [Paragraph("Ref: " + escape(legal_ref), s_small)], ""])
+
+        last = len(rows) - 1
+        card = Table(rows, colWidths=[16 * mm, CONTENT_W - 16 * mm - 32 * mm, 32 * mm])
+        card.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.6, BORDER),
+            ("LINEBEFORE", (0, 0), (0, -1), 3, fg),
+            ("BACKGROUND", (0, 0), (-1, 0), LIGHT_BG),
+            ("BACKGROUND", (2, 0), (2, 0), bg),
+            ("SPAN", (1, 1), (2, 1)),
+            *[("SPAN", (1, r), (2, r)) for r in range(2, last + 1)],
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("VALIGN", (1, 1), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story += [KeepTogether(card), Spacer(1, 6)]
+
+    # 11. Verification section
+    disclaimer = Table(
+        [[Paragraph(
+            "<b>Inspector Physical Verification.</b> This AI-generated assessment is preliminary and "
+            "must be physically verified by the inspector. It does not constitute a final legal "
+            "determination.", s_note)]],
+        colWidths=[CONTENT_W],
+    )
+    disclaimer.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFF8E6")),
+        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#F0D9A0")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 12),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ("TOPPADDING", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+    ]))
+
+    sig = Table(
+        [["", ""],
+         [Paragraph("Inspector Signature", s_small), Paragraph("Date", s_small)]],
+        colWidths=[CONTENT_W * 0.6, CONTENT_W * 0.4],
+        rowHeights=[22 * mm, None],
+    )
+    sig.setStyle(TableStyle([
+        ("LINEABOVE", (0, 1), (0, 1), 0.8, SLATE),
+        ("LINEABOVE", (1, 1), (1, 1), 0.8, SLATE),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (0, 0), 20),
+    ]))
+    story.append(KeepTogether([Spacer(1, 14), disclaimer, sig]))
+
+    # Build PDF
+    pdf_buffer = BytesIO()
+    document = SimpleDocTemplate(
+        pdf_buffer, pagesize=A4,
+        leftMargin=18 * mm, rightMargin=18 * mm,
+        topMargin=16 * mm, bottomMargin=20 * mm,
+        title=f"LegalMet Inspection Report #{ins_id}",
+        author="LegalMet-AI",
+    )
+    document.build(story, canvasmaker=NumberedCanvas)
+    pdf_bytes = pdf_buffer.getvalue()
+    pdf_buffer.close()
+
+    # 12. Persist
+    try:
+        report_record.report = pdf_bytes
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        print("PDF DATABASE ERROR:", repr(exc))
+        raise HTTPException(status_code=500, detail="Failed to save PDF report") from exc
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="LegalMet_Report_{ins_id}.pdf"'},
+    )
