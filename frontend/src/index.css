@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+/*
+  Design system tokens (Tailwind v4 @theme).
+  These create utility classes such as bg-brand-600, text-navy-900, bg-pass-50.
+  Change a colour here and it changes across the whole app.
+*/
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  /* Navy: sidebar, headings */
+  --color-navy-50: #f1f4f9;
+  --color-navy-100: #dde4ef;
+  --color-navy-200: #b9c6dc;
+  --color-navy-500: #4a6285;
+  --color-navy-700: #1f3a5f;
+  --color-navy-800: #172c49;
+  --color-navy-900: #0f1f36;
+
+  /* Brand accent: teal-blue */
+  --color-brand-50: #ecf6fd;
+  --color-brand-100: #d3e9f9;
+  --color-brand-500: #1d8fd1;
+  --color-brand-600: #1678b2;
+  --color-brand-700: #115f8f;
+
+  /* Status colours (same hues as the PDF report) */
+  --color-pass-50: #e6f4ec;
+  --color-pass-600: #1e8e4e;
+  --color-fail-50: #fbeae8;
+  --color-fail-600: #c0392b;
+  --color-warn-50: #fdf3dc;
+  --color-warn-600: #b7791f;
+}
+
+@layer base {
+  body {
+    @apply bg-navy-50 text-navy-900 antialiased;
+  }
+  /* Visible keyboard focus everywhere */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-brand-500;
+  }
+}
+
+/* Tailwind v4: a class that other classes @apply must be declared with @utility */
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium
+         transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+/* Reusable component classes keep JSX readable for beginners */
+@layer components {
+  .card {
+    @apply rounded-xl border border-navy-100 bg-white shadow-sm;
+  }
+  .btn-primary {
+    @apply btn bg-brand-600 text-white hover:bg-brand-700;
+  }
+  .btn-secondary {
+    @apply btn border border-navy-200 bg-white text-navy-800 hover:bg-navy-50;
+  }
+  .btn-danger {
+    @apply btn bg-fail-600 text-white hover:opacity-90;
+  }
+  .input {
+    @apply w-full rounded-lg border border-navy-200 bg-white px-3 py-2 text-sm text-navy-900
+           placeholder:text-navy-500/60 transition-colors
+           focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30;
+  }
+  .label {
+    @apply mb-1 block text-xs font-semibold uppercase tracking-wide text-navy-500;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold;
+  }
+}
