@@ -118,3 +118,12 @@ class RuleEvaluation(BaseModel):
 
 class RuleEvaluationResponse(BaseModel):
     inspection_evaluation: list[RuleEvaluation]
+
+class InspectionListItem(BaseModel):
+    ins_id: int
+    date: datetime
+    status: str
+    category: str
+    img_id: int | None = None
+    has_evaluation: bool
+    has_report: bool

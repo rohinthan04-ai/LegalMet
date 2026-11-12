@@ -1,4 +1,5 @@
 import re
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.responses import Response
 from xml.sax.saxutils import escape
@@ -23,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timezone
 from database import SessionLocal,get_db
 from models import Inspector,Inspection,Image,Category, CategoryRule, Rule, Report
-from schemas import InspectorCreate, InspectorResponse, InspectorLogin, TokenResponse, InspectionCreate, InspectionResponse, ImageResponse, ProductExtraction, GeminiAnalysisResponse, CategoryResponse, RuleEvaluationResponse
+from schemas import InspectorCreate, InspectorResponse, InspectorLogin, TokenResponse, InspectionCreate, InspectionResponse, ImageResponse, ProductExtraction, GeminiAnalysisResponse, CategoryResponse, RuleEvaluationResponse, InspectionListItem
 from services.gemini_evaluation import evaluate_product_rules
 from services.gemini_service import extract_product_details
 from core.security import hash_password, verify_password
@@ -35,7 +36,13 @@ app = FastAPI(
     description="Packaged Commodity Inspection Assistant",
     version="1.0.0"
 )
-
+app.add_middleware(
+       CORSMiddleware,
+       allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+       allow_methods=["*"],
+       allow_headers=["*"],
+       expose_headers=["Content-Disposition"],
+)
 
 # Database session dependency
 def get_db():
@@ -178,6 +185,39 @@ def create_inspection(
 
     return new_inspection
 
+@app.get("/inspections", response_model=list[InspectionListItem])
+def list_inspections(
+    db: Session = Depends(get_db),
+    current_inspector: Inspector = Depends(get_current_inspector)
+):
+    inspections = (
+        db.query(Inspection)
+        .filter(Inspection.id == current_inspector.id)
+        .order_by(Inspection.date.desc())
+        .all()
+    )
+
+    result = []
+    for ins in inspections:
+        image = (
+            db.query(Image.img_id)
+            .filter(Image.ins_id == ins.ins_id)
+            .order_by(Image.img_id.asc())
+            .first()
+        )
+        report = db.query(Report).filter(Report.inspection_id == ins.ins_id).first()
+
+        result.append({
+            "ins_id": ins.ins_id,
+            "date": ins.date,
+            "status": ins.status,
+            "category": ins.category,
+            "img_id": image.img_id if image else None,
+            "has_evaluation": bool(report and report.gemini_report),
+            "has_report": bool(report and report.report),
+        })
+    return result
+
 @app.post(
     "/inspections/{ins_id}/images",
     response_model=ImageResponse,
@@ -315,6 +355,34 @@ def analyze_image(
         extracted_data=extracted_data
     )
 
+@app.put(
+    "/images/{img_id}/details",
+    response_model=GeminiAnalysisResponse
+)
+def confirm_image_details(
+    img_id: int,
+    details: ProductExtraction,
+    db: Session = Depends(get_db),
+    current_inspector: Inspector = Depends(get_current_inspector)
+):
+    image_record = db.query(Image).join(Inspection).filter(
+        Image.img_id == img_id,
+        Inspection.id == current_inspector.id
+    ).first()
+
+    if image_record is None:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    try:
+        image_record.details = details.model_dump(mode="json")
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        print("DATABASE ERROR:", repr(exc))
+        raise HTTPException(status_code=500, detail="Failed to save confirmed details") from exc
+
+    return GeminiAnalysisResponse(img_id=img_id, extracted_data=details)
+
 @app.get("/categories", response_model=list[CategoryResponse])
 def get_categories(
     db: Session = Depends(get_db),
@@ -450,7 +518,7 @@ def evaluate_image(
         ).first()
 
         inspection_record.status = "completed"
-
+        inspection_record.category = category.category_name
         db.commit()
 
     except Exception as exc:

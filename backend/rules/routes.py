@@ -3,14 +3,19 @@ from models import Category, CategoryRule, Rule
 from database import get_db
 from sqlalchemy.orm import Session
 from fastapi import Depends
-
+from auth.dependencies import get_current_inspector
+from models import Inspector
 router = APIRouter(
     prefix="/categories",
     tags=["Rules"]
 )
 
 @router.get("/{c_id}/rules")
-def get_category_rules(c_id: int, db: Session = Depends(get_db)):
+def get_category_rules(
+    c_id: int,
+    db: Session = Depends(get_db),
+    current_inspector: Inspector = Depends(get_current_inspector)
+):
 
     category = db.query(Category).filter(Category.c_id == c_id).first()
 
