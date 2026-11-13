@@ -34,6 +34,14 @@
 }
 
 @layer base {
+    html {
+    font-size: 112.5%; /* 18px, up from the default 16px */
+  }
+  @media (min-width: 1536px) {
+    html {
+      font-size: 125%; /* 20px on large desktop screens */
+    }
+  }
   body {
     @apply bg-navy-50 text-navy-900 antialiased;
   }

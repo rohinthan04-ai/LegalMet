@@ -32,7 +32,18 @@ api.interceptors.request.use((config) => {
 // clear the token and tell the app. AuthContext listens for this event and redirects to /login.
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    // Requests made with responseType "blob" (PDF, image) also get their ERROR body as a Blob.
+    // Turn it back into JSON so getErrorMessage() can read FastAPI's { detail: "..." }.
+    const body = error.response?.data;
+    if (body instanceof Blob && body.type.includes("json")) {
+      try {
+        error.response.data = JSON.parse(await body.text());
+      } catch {
+        /* leave it as it is */
+      }
+    }
+
     const isLoginRequest = error.config?.url === "/auth/login";
     if (error.response?.status === 401 && !isLoginRequest) {
       tokenStore.clear();

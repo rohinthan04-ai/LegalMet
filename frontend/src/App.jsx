@@ -1,29 +1,59 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import SetupCheck from "./pages/SetupCheck";
-import Placeholder from "./components/common/Placeholder";
+import { createBrowserRouter, Navigate, Outlet, RouterProvider } from "react-router-dom";
+import { AuthProvider } from "./context/AuthContext";
+import ProtectedRoute from "./routes/ProtectedRoute";
+import AppLayout from "./components/layout/AppLayout";
+import Login from "./pages/Login";
+import Register from "./pages/Register";
+import Dashboard from "./pages/Dashboard";
+import Profile from "./pages/Profile";
+import CreateInspection from "./pages/CreateInspection";
+import ImageUpload from "./pages/ImageUpload";
+import OCRReview from "./pages/OCRReview";
+import CategorySelection from "./pages/CategorySelection";
+import RuleEvaluation from "./pages/RuleEvaluation";
+import Report from "./pages/Report";
+import InspectionHistory from "./pages/InspectionHistory";
 
-// All routes of the app. Phase 3 and later replace each <Placeholder> with a real page,
-// and wrap the authenticated ones in a ProtectedRoute + layout.
+// We use createBrowserRouter (a "data router") because the OCR review page needs useBlocker,
+// which warns the inspector before they leave a page with unsaved edits.
 // IDs live in the URL (e.g. /inspections/12/upload) so a page refresh never loses context.
+const router = createBrowserRouter([
+  {
+    // Root route: gives every page access to the logged-in inspector
+    element: (
+      <AuthProvider>
+        <Outlet />
+      </AuthProvider>
+    ),
+    children: [
+      { path: "/login", element: <Login /> },
+      { path: "/register", element: <Register /> },
+      {
+        // Everything below needs a logged-in inspector and is wrapped in the sidebar layout
+        element: <ProtectedRoute />,
+        children: [
+          {
+            element: <AppLayout />,
+            children: [
+              { path: "/dashboard", element: <Dashboard /> },
+              { path: "/profile", element: <Profile /> },
+              { path: "/inspections", element: <InspectionHistory /> },
+              { path: "/inspections/new", element: <CreateInspection /> },
+              { path: "/inspections/:insId/upload", element: <ImageUpload /> },
+              { path: "/inspections/:insId/images/:imgId/review", element: <OCRReview /> },
+              { path: "/inspections/:insId/images/:imgId/category", element: <CategorySelection /> },
+              { path: "/inspections/:insId/images/:imgId/evaluation", element: <RuleEvaluation /> },
+              { path: "/inspections/:insId/report", element: <Report /> },
+            ],
+          },
+        ],
+      },
+      { path: "/", element: <Navigate to="/dashboard" replace /> },
+      { path: "*", element: <Navigate to="/dashboard" replace /> },
+    ],
+  },
+]);
+
 export default function App() {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Navigate to="/setup-check" replace />} />
-        <Route path="/setup-check" element={<SetupCheck />} />
-
-        <Route path="/login" element={<Placeholder title="Login" />} />
-        <Route path="/dashboard" element={<Placeholder title="Dashboard" />} />
-        <Route path="/inspections" element={<Placeholder title="Inspection History" />} />
-        <Route path="/inspections/new" element={<Placeholder title="New Inspection" />} />
-        <Route path="/inspections/:insId/upload" element={<Placeholder title="Upload Image" />} />
-        <Route path="/inspections/:insId/images/:imgId/review" element={<Placeholder title="Review Extracted Details" />} />
-        <Route path="/inspections/:insId/images/:imgId/category" element={<Placeholder title="Select Category" />} />
-        <Route path="/inspections/:insId/images/:imgId/evaluation" element={<Placeholder title="Rule Evaluation" />} />
-        <Route path="/inspections/:insId/report" element={<Placeholder title="Inspection Report" />} />
-
-        <Route path="*" element={<Placeholder title="Page not found" />} />
-      </Routes>
-    </BrowserRouter>
-  );
+  return <RouterProvider router={router} />;
 }
