@@ -36,6 +36,7 @@ app = FastAPI(
     description="Packaged Commodity Inspection Assistant",
     version="1.0.0"
 )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -47,6 +48,7 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
 )
+
 
 # Database session dependency
 def get_db():
